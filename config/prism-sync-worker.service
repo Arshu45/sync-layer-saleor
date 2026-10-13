@@ -1,0 +1,19 @@
+[Unit]
+Description=PRISM Sync Layer: Worker Service
+After=network.target rabbitmq-server.service postgresql.service
+Wants=rabbitmq-server.service postgresql.service
+
+[Service]
+Type=simple
+User=prism-sync
+Group=prism-sync
+WorkingDirectory=/opt/prism-sync
+EnvironmentFile=/etc/prism-sync/prism-sync.env
+ExecStart=/opt/prism-sync/venv/bin/python3 /opt/prism-sync/worker.py
+Restart=always
+RestartSec=5s
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target
+

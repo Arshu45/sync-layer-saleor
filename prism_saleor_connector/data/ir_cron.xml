@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Cron: Product Catalog Sync Collector -->
+        <record id="cron_prism_sync_products" model="ir.cron">
+            <field name="name">PRISM Sync: products</field>
+            <field name="model_id" ref="model_prism_product_sync"/>
+            <field name="state">code</field>
+            <field name="code">model._collect_product_changes()</field>
+            <field name="interval_number">10</field>
+            <field name="interval_type">minutes</field>
+            <field name="numbercall">-1</field>
+            <field name="active" eval="True"/>
+        </record>
+
+        <!-- Cron: Weekly Outbox Purge (Sent rows older than 7 days) -->
+        <record id="cron_prism_sync_outbox_purge" model="ir.cron">
+            <field name="name">PRISM Sync: outbox purge</field>
+            <field name="model_id" ref="model_prism_sync_outbox"/>
+            <field name="state">code</field>
+            <field name="code">model._purge_sent_outbox(days=7)</field>
+            <field name="interval_number">1</field>
+            <field name="interval_type">weeks</field>
+            <field name="numbercall">-1</field>
+            <field name="active" eval="True"/>
+        </record>
+    </data>
+</odoo>
+

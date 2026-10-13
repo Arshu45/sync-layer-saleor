@@ -1,0 +1,4 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_prism_sync_outbox_user,prism.sync.outbox.user,model_prism_sync_outbox,base.group_user,1,1,1,1
+access_prism_sync_outbox_system,prism.sync.outbox.system,model_prism_sync_outbox,base.group_system,1,1,1,1
+

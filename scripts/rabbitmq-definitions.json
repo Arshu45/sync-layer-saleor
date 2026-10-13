@@ -1,0 +1,162 @@
+{
+  "rabbit_version": "3.12.0",
+  "vhosts": [
+    {
+      "name": "prism"
+    }
+  ],
+  "users": [
+    {
+      "name": "prism_sync",
+      "password_hash": "",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": []
+    }
+  ],
+  "permissions": [
+    {
+      "user": "prism_sync",
+      "vhost": "prism",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "prism.sync",
+      "vhost": "prism",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "prism.sync.dlx",
+      "vhost": "prism",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "to_saleor.products",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "prism.sync.dlx"
+      }
+    },
+    {
+      "name": "to_saleor.stock",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "prism.sync.dlx"
+      }
+    },
+    {
+      "name": "to_saleor.customers",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "prism.sync.dlx"
+      }
+    },
+    {
+      "name": "to_odoo.orders",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "prism.sync.dlx"
+      }
+    },
+    {
+      "name": "to_odoo.customers",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum",
+        "x-delivery-limit": 5,
+        "x-dead-letter-exchange": "prism.sync.dlx"
+      }
+    },
+    {
+      "name": "prism.sync.dead",
+      "vhost": "prism",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-queue-type": "quorum"
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "source": "prism.sync",
+      "vhost": "prism",
+      "destination": "to_saleor.products",
+      "destination_type": "queue",
+      "routing_key": "odoo.product.#",
+      "arguments": {}
+    },
+    {
+      "source": "prism.sync",
+      "vhost": "prism",
+      "destination": "to_saleor.stock",
+      "destination_type": "queue",
+      "routing_key": "odoo.stock.#",
+      "arguments": {}
+    },
+    {
+      "source": "prism.sync",
+      "vhost": "prism",
+      "destination": "to_saleor.customers",
+      "destination_type": "queue",
+      "routing_key": "odoo.customer.#",
+      "arguments": {}
+    },
+    {
+      "source": "prism.sync",
+      "vhost": "prism",
+      "destination": "to_odoo.orders",
+      "destination_type": "queue",
+      "routing_key": "saleor.order.#",
+      "arguments": {}
+    },
+    {
+      "source": "prism.sync",
+      "vhost": "prism",
+      "destination": "to_odoo.customers",
+      "destination_type": "queue",
+      "routing_key": "saleor.customer.#",
+      "arguments": {}
+    },
+    {
+      "source": "prism.sync.dlx",
+      "vhost": "prism",
+      "destination": "prism.sync.dead",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}
+
