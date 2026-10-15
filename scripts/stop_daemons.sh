@@ -33,6 +33,7 @@ stop_process() {
     fi
 }
 
-stop_process "relay"
 stop_process "worker"
+stop_process "relay"
+stop_process "ingress"
 

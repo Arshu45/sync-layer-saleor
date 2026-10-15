@@ -77,14 +77,20 @@ def validate_product_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(ch, dict):
             raise ValidationError(f"Channel entry at index {idx} must be an object")
         slug = ch.get("channel_slug")
-        price = ch.get("price_inr")
+        raw_price = ch.get("price_inr")
         if not slug or not isinstance(slug, str):
             raise ValidationError(f"Channel entry at index {idx} missing valid 'channel_slug'")
-        if price is None or not isinstance(price, (int, float)) or price < 0:
+        if raw_price is None:
+            raise ValidationError(f"Channel entry at index {idx} requires non-negative numeric 'price_inr'")
+        try:
+            price_val = float(raw_price)
+            if price_val < 0:
+                raise ValueError()
+        except (ValueError, TypeError):
             raise ValidationError(f"Channel entry at index {idx} requires non-negative numeric 'price_inr'")
 
     # Optional fields defaults
-    return {
+    res = {
         "sku": sku.strip(),
         "odoo_product_id": odoo_product_id,
         "name": name.strip(),
@@ -101,6 +107,9 @@ def validate_product_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             for ch in channels
         ]
     }
+    if "odoo_template_id" in payload:
+        res["odoo_template_id"] = payload["odoo_template_id"]
+    return res
 
 
 def validate_envelope(msg: Dict[str, Any]) -> Dict[str, Any]:

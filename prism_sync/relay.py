@@ -2,7 +2,7 @@
 """
 PRISM RetailMind: Outbox Relay Daemon (prism-sync-relay)
 Polls the prism_sync_outbox table in Odoo PostgreSQL, validates schemas,
-and publishes confirmed persistent messages to RabbitMQ exchange 'prism.sync'.
+and pushes rows to the PRISM FastAPI Ingress API (which confirms delivery to RabbitMQ).
 """
 
 import json
@@ -13,6 +13,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Ensure package root is in sys.path
 package_root = Path(__file__).resolve().parent.parent
@@ -26,6 +27,7 @@ try:
         package_root / "prism-sync.env",
         Path("/etc/prism-sync/prism-sync.env"),
         Path.cwd() / "prism-sync.env",
+        Path.cwd() / ".env",
     ]:
         if env_candidate and Path(env_candidate).is_file():
             load_dotenv(env_candidate)
@@ -33,9 +35,9 @@ try:
 except ImportError:
     pass
 
-import pika
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import requests
 
 try:
     from prism_sync.schemas import validate_message, ValidationError
@@ -49,9 +51,9 @@ logging.basicConfig(
 logger = logging.getLogger("prism-sync-relay")
 
 # Environment variables
-RABBIT_URL = os.getenv("RABBIT_URL", "amqp://prism_sync:prism_sync@127.0.0.1:5672/prism")
-ODOO_DB_DSN = os.getenv("ODOO_DB_DSN") or os.getenv("ODOO_RO_DSN", "host=127.0.0.1 dbname=odoo user=prism_sync password=prism_sync")
-EXCHANGE_NAME = os.getenv("RABBIT_EXCHANGE", "prism.sync")
+ODOO_DB_DSN = os.getenv("ODOO_DB_DSN") or os.getenv("ODOO_RO_DSN", "host=172.27.133.76 port=5432 dbname=odoo user=prism_sync password=cybage@123")
+INGRESS_URL = os.getenv("INGRESS_URL", "http://127.0.0.1:8095").rstrip("/")
+INGEST_API_KEY = os.getenv("INGEST_API_KEY", "prism_secret_2026")
 POLL_INTERVAL_SEC = float(os.getenv("RELAY_POLL_INTERVAL", "5.0"))
 BATCH_SIZE = int(os.getenv("RELAY_BATCH_SIZE", "100"))
 
@@ -71,8 +73,12 @@ signal.signal(signal.SIGTERM, handle_shutdown)
 class RelayService:
     def __init__(self):
         self.db_conn: Optional[psycopg2.extensions.connection] = None
-        self.rmq_conn: Optional[pika.BlockingConnection] = None
-        self.rmq_channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
+        self.http_session = requests.Session()
+        self.http_session.headers.update({
+            "X-API-Key": INGEST_API_KEY,
+            "Content-Type": "application/json",
+            "User-Agent": "prism-sync-relay/1.0"
+        })
 
     def connect_db(self):
         if self.db_conn and not self.db_conn.closed:
@@ -82,36 +88,19 @@ class RelayService:
         self.db_conn.autocommit = False
         logger.info("Connected to Odoo database.")
 
-    def connect_rabbitmq(self):
-        if self.rmq_conn and self.rmq_conn.is_open:
-            return
-        logger.info("Connecting to RabbitMQ broker at %s ...", RABBIT_URL.split("@")[-1])
-        parameters = pika.URLParameters(RABBIT_URL)
-        parameters.heartbeat = 60
-        self.rmq_conn = pika.BlockingConnection(parameters)
-        self.rmq_channel = self.rmq_conn.channel()
-        # Enable Publisher Confirms
-        self.rmq_channel.confirm_delivery()
-        logger.info("Connected to RabbitMQ with publisher confirms enabled.")
-
     def close(self):
-        try:
-            if self.rmq_channel and self.rmq_channel.is_open:
-                self.rmq_channel.close()
-            if self.rmq_conn and self.rmq_conn.is_open:
-                self.rmq_conn.close()
-        except Exception as e:
-            logger.debug("Error closing RabbitMQ: %s", e)
-
         try:
             if self.db_conn and not self.db_conn.closed:
                 self.db_conn.close()
         except Exception as e:
             logger.debug("Error closing DB: %s", e)
+        try:
+            self.http_session.close()
+        except Exception:
+            pass
 
     def process_batch(self) -> int:
         self.connect_db()
-        self.connect_rabbitmq()
 
         cur = self.db_conn.cursor(cursor_factory=RealDictCursor)
         select_sql = """
@@ -130,8 +119,8 @@ class RelayService:
             cur.close()
             return 0
 
-        logger.info("Fetched %d pending outbox rows to publish.", len(rows))
-        published_count = 0
+        logger.info("Fetched %d pending outbox rows to process.", len(rows))
+        pushed_count = 0
 
         for row in rows:
             row_id = row["id"]
@@ -159,10 +148,11 @@ class RelayService:
                 "action": row["action"],
                 "schema": row["schema"],
                 "as_of": as_of_str,
-                "payload": payload_dict
+                "payload": payload_dict,
+                "routing_key": row["routing_key"]
             }
 
-            # 1. Validate envelope and payload schema
+            # 1. Local Schema Pre-validation
             try:
                 validated_msg = validate_message(envelope)
             except ValidationError as val_err:
@@ -170,36 +160,61 @@ class RelayService:
                 self._mark_failed(cur, row_id, str(val_err))
                 continue
 
-            # 2. Publish with publisher confirms
-            routing_key = row["routing_key"]
-            body_bytes = json.dumps(validated_msg).encode("utf-8")
-            props = pika.BasicProperties(
-                delivery_mode=2,  # Make message persistent
-                content_type="application/json",
-                message_id=row["msg_id"],
-            )
+            # 2. Push to FastAPI Ingress API
+            flow = row["flow"]
+            ingress_endpoint = f"{INGRESS_URL}/ingest/odoo/{flow}"
 
             try:
-                self.rmq_channel.basic_publish(
-                    exchange=EXCHANGE_NAME,
-                    routing_key=routing_key,
-                    body=body_bytes,
-                    properties=props,
-                    mandatory=True,
+                resp = self.http_session.post(
+                    ingress_endpoint,
+                    json=validated_msg,
+                    timeout=10.0
                 )
-                self._mark_sent(cur, row_id)
-                published_count += 1
-                logger.info("Published msg_id=%s routing_key=%s outbox_id=%d", row["msg_id"], routing_key, row_id)
-            except Exception as pub_err:
-                logger.error("Failed to publish message msg_id=%s: %s", row["msg_id"], pub_err)
-                # Rollback current batch transaction so the unconfirmed row remains pending
+            except requests.RequestException as req_err:
+                logger.warning(
+                    "Ingress API at %s unreachable: %s. Rolling back batch, will retry next cycle.",
+                    INGRESS_URL, req_err
+                )
                 self.db_conn.rollback()
                 cur.close()
-                raise pub_err
+                return pushed_count
+
+            if resp.status_code == 200:
+                self._mark_sent(cur, row_id)
+                pushed_count += 1
+                logger.info(
+                    "Pushed msg_id=%s flow=%s outbox_id=%d -> Ingress (200 OK)",
+                    row["msg_id"], flow, row_id
+                )
+            elif resp.status_code == 422:
+                err_text = f"Ingress 422 Validation Error: {resp.text}"
+                logger.error("Outbox id=%d msg_id=%s rejected by Ingress: %s", row_id, row["msg_id"], err_text)
+                self._mark_failed(cur, row_id, err_text)
+            elif resp.status_code == 401:
+                logger.critical("Ingress 401 Unauthorized: Invalid INGEST_API_KEY! Please verify prism-sync.env.")
+                self.db_conn.rollback()
+                cur.close()
+                return pushed_count
+            elif resp.status_code == 503:
+                logger.warning(
+                    "Ingress returned 503 (RabbitMQ publish failed). Message msg_id=%s remains pending for retry.",
+                    row["msg_id"]
+                )
+                self.db_conn.rollback()
+                cur.close()
+                return pushed_count
+            else:
+                logger.error(
+                    "Ingress unexpected status %d: %s for msg_id=%s. Rolling back.",
+                    resp.status_code, resp.text, row["msg_id"]
+                )
+                self.db_conn.rollback()
+                cur.close()
+                return pushed_count
 
         self.db_conn.commit()
         cur.close()
-        return published_count
+        return pushed_count
 
     def _mark_sent(self, cur, row_id: int):
         cur.execute(
@@ -221,26 +236,20 @@ class RelayService:
             (error_text, row_id)
         )
 
-    def sleep_with_heartbeat(self, seconds: float):
+    def sleep(self, seconds: float):
         start = time.time()
         while running and (time.time() - start) < seconds:
-            try:
-                if self.rmq_conn and self.rmq_conn.is_open:
-                    self.rmq_conn.process_data_events(time_limit=1.0)
-                else:
-                    time.sleep(1.0)
-            except Exception:
-                time.sleep(1.0)
+            time.sleep(0.5)
 
     def run(self):
-        logger.info("Starting PRISM Outbox Relay loop...")
+        logger.info("Starting PRISM Outbox Relay loop (Target: %s)...", INGRESS_URL)
         while running:
             try:
                 count = self.process_batch()
                 if count == 0 and running:
-                    self.sleep_with_heartbeat(POLL_INTERVAL_SEC)
-            except (psycopg2.OperationalError, pika.exceptions.AMQPConnectionError) as conn_err:
-                logger.warning("Connection error: %s. Reconnecting in 5 seconds...", conn_err)
+                    self.sleep(POLL_INTERVAL_SEC)
+            except psycopg2.OperationalError as conn_err:
+                logger.warning("Database connection error: %s. Reconnecting in 5 seconds...", conn_err)
                 self.close()
                 time.sleep(5)
             except Exception as exc:
@@ -259,4 +268,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
