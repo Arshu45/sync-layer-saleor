@@ -12,13 +12,35 @@ import signal
 import sys
 import time
 from datetime import datetime
-from typing import Optional
+from pathlib import Path
+
+# Ensure package root is in sys.path
+package_root = Path(__file__).resolve().parent.parent
+if str(package_root) not in sys.path:
+    sys.path.insert(0, str(package_root))
+
+try:
+    from dotenv import load_dotenv
+    for env_candidate in [
+        os.getenv("PRISM_ENV_FILE"),
+        package_root / "prism-sync.env",
+        Path("/etc/prism-sync/prism-sync.env"),
+        Path.cwd() / "prism-sync.env",
+    ]:
+        if env_candidate and Path(env_candidate).is_file():
+            load_dotenv(env_candidate)
+            break
+except ImportError:
+    pass
 
 import pika
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
-from prism_sync.schemas import validate_message, ValidationError
+try:
+    from prism_sync.schemas import validate_message, ValidationError
+except ModuleNotFoundError:
+    from schemas import validate_message, ValidationError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -199,13 +221,24 @@ class RelayService:
             (error_text, row_id)
         )
 
+    def sleep_with_heartbeat(self, seconds: float):
+        start = time.time()
+        while running and (time.time() - start) < seconds:
+            try:
+                if self.rmq_conn and self.rmq_conn.is_open:
+                    self.rmq_conn.process_data_events(time_limit=1.0)
+                else:
+                    time.sleep(1.0)
+            except Exception:
+                time.sleep(1.0)
+
     def run(self):
         logger.info("Starting PRISM Outbox Relay loop...")
         while running:
             try:
                 count = self.process_batch()
                 if count == 0 and running:
-                    time.sleep(POLL_INTERVAL_SEC)
+                    self.sleep_with_heartbeat(POLL_INTERVAL_SEC)
             except (psycopg2.OperationalError, pika.exceptions.AMQPConnectionError) as conn_err:
                 logger.warning("Connection error: %s. Reconnecting in 5 seconds...", conn_err)
                 self.close()

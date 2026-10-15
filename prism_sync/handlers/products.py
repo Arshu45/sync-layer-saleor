@@ -3,13 +3,48 @@ PRISM RetailMind: Product Handler (to_saleor.products consumer)
 Applies Odoo product catalog changes to Saleor 3.23 via GraphQL.
 """
 
+import json
 import logging
-from typing import Any, Dict
+import re
+from typing import Any, Dict, Optional
 import psycopg2
 
-from prism_sync.utils.saleor_client import SaleorClient
+try:
+    from prism_sync.utils.saleor_client import SaleorClient
+except ModuleNotFoundError:
+    from utils.saleor_client import SaleorClient
 
 logger = logging.getLogger("handler.products")
+
+
+def format_saleor_description(desc: Optional[str]) -> str:
+    """Formats HTML or raw text into Saleor EditorJS JSONString specification."""
+    if not desc or not desc.strip():
+        return json.dumps({"blocks": []})
+
+    try:
+        parsed = json.loads(desc)
+        if isinstance(parsed, dict) and "blocks" in parsed:
+            return desc
+    except Exception:
+        pass
+
+    clean_text = re.sub(r"<[^>]+>", " ", desc)
+    clean_text = " ".join(clean_text.split()).strip()
+
+    editorjs_doc = {
+        "time": 1600000000000,
+        "blocks": [
+            {
+                "type": "paragraph",
+                "data": {
+                    "text": clean_text or desc
+                }
+            }
+        ],
+        "version": "2.20.0"
+    }
+    return json.dumps(editorjs_doc)
 
 MUTATION_VARIANT_CHANNEL_UPDATE = """
 mutation UpdateVariantChannels($id: ID!, $input: [ProductVariantChannelListingAddInput!]!) {
@@ -91,6 +126,16 @@ class ProductHandler:
             self._channel_cache = self.saleor.get_channel_ids()
         return self._channel_cache
 
+    def _resolve_channel_id(self, ch_slug: str) -> Optional[str]:
+        cmap = self._get_channel_map()
+        if ch_slug in cmap:
+            return cmap[ch_slug]
+        if ch_slug in ("social-commerce", "social_commerce") and "social" in cmap:
+            return cmap["social"]
+        if ch_slug == "social" and "social-commerce" in cmap:
+            return cmap["social-commerce"]
+        return None
+
     def _get_default_product_type(self) -> str:
         if not self._default_product_type_id:
             pt_id = self.saleor.get_first_product_type_id()
@@ -129,19 +174,25 @@ class ProductHandler:
             logger.info("SKU %s exists in variant_map (variant_id=%s). Updating in Saleor...", sku, variant_id)
 
             # Update Product details
-            if name or description:
+            prod_input = {}
+            if name:
+                prod_input["name"] = name
+            if description:
+                prod_input["description"] = format_saleor_description(description)
+
+            if prod_input:
                 self.saleor.execute(
                     MUTATION_PRODUCT_UPDATE,
-                    {"id": product_id, "input": {"name": name, "description": description}}
+                    {"id": product_id, "input": prod_input}
                 )
 
             # Update Variant pricing per channel
             variant_channel_inputs = []
             for ch in channels_data:
-                ch_slug = ch["channel_slug"]
-                if ch_slug in channel_map:
+                ch_id = self._resolve_channel_id(ch["channel_slug"])
+                if ch_id:
                     variant_channel_inputs.append({
-                        "channelId": channel_map[ch_slug],
+                        "channelId": ch_id,
                         "price": ch["price_inr"]
                     })
 
@@ -157,9 +208,16 @@ class ProductHandler:
             pt_id = self._get_default_product_type()
 
             # 1. Create Product
+            prod_create_input = {
+                "name": name,
+                "productType": pt_id,
+            }
+            if description:
+                prod_create_input["description"] = format_saleor_description(description)
+
             prod_res = self.saleor.execute(
                 MUTATION_PRODUCT_CREATE,
-                {"input": {"name": name, "description": description, "productType": pt_id}}
+                {"input": prod_create_input}
             )
             created_prod = prod_res.get("productCreate", {}).get("product", {})
             product_id = created_prod.get("id")
@@ -170,10 +228,10 @@ class ProductHandler:
             # 2. Enable Product in Channels
             update_channels_input = []
             for ch in channels_data:
-                ch_slug = ch["channel_slug"]
-                if ch_slug in channel_map:
+                ch_id = self._resolve_channel_id(ch["channel_slug"])
+                if ch_id:
                     update_channels_input.append({
-                        "channelId": channel_map[ch_slug],
+                        "channelId": ch_id,
                         "isPublished": True,
                         "visibleInListings": True
                     })
@@ -197,10 +255,10 @@ class ProductHandler:
             # 4. Set Variant channel prices
             var_channel_inputs = []
             for ch in channels_data:
-                ch_slug = ch["channel_slug"]
-                if ch_slug in channel_map:
+                ch_id = self._resolve_channel_id(ch["channel_slug"])
+                if ch_id:
                     var_channel_inputs.append({
-                        "channelId": channel_map[ch_slug],
+                        "channelId": ch_id,
                         "price": ch["price_inr"]
                     })
             if var_channel_inputs:

@@ -12,12 +12,38 @@ import signal
 import sys
 import time
 
+from pathlib import Path
+
+# Ensure package root is in sys.path
+package_root = Path(__file__).resolve().parent.parent
+if str(package_root) not in sys.path:
+    sys.path.insert(0, str(package_root))
+
+try:
+    from dotenv import load_dotenv
+    for env_candidate in [
+        os.getenv("PRISM_ENV_FILE"),
+        package_root / "prism-sync.env",
+        Path("/etc/prism-sync/prism-sync.env"),
+        Path.cwd() / "prism-sync.env",
+    ]:
+        if env_candidate and Path(env_candidate).is_file():
+            load_dotenv(env_candidate)
+            break
+except ImportError:
+    pass
+
 import pika
 import psycopg2
 
-from prism_sync.schemas import validate_message
-from prism_sync.utils.saleor_client import SaleorClient
-from prism_sync.handlers.products import ProductHandler
+try:
+    from prism_sync.schemas import validate_message
+    from prism_sync.utils.saleor_client import SaleorClient
+    from prism_sync.handlers.products import ProductHandler
+except ModuleNotFoundError:
+    from schemas import validate_message
+    from utils.saleor_client import SaleorClient
+    from handlers.products import ProductHandler
 
 logging.basicConfig(
     level=logging.INFO,

@@ -1,0 +1,27 @@
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Environment Variables & Secrets
+prism-sync.env
+.env
+*.local.env
+
+# Logs and Runtime Process IDs
+logs/
+*.log
+*.pid
+
+# System / OS
+.DS_Store
+Thumbs.db
+

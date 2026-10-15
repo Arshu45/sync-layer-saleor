@@ -12,6 +12,23 @@ import requests
 import psycopg2
 from psycopg2.extras import execute_batch
 
+from pathlib import Path
+
+package_root = Path(__file__).resolve().parent.parent
+try:
+    from dotenv import load_dotenv
+    for env_candidate in [
+        os.getenv("PRISM_ENV_FILE"),
+        package_root / "prism-sync.env",
+        Path("/etc/prism-sync/prism-sync.env"),
+        Path.cwd() / "prism-sync.env",
+    ]:
+        if env_candidate and Path(env_candidate).is_file():
+            load_dotenv(env_candidate)
+            break
+except ImportError:
+    pass
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("seed_variant_map")
 
