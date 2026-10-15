@@ -169,6 +169,21 @@ def validate_envelope(msg: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def validate_stock_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Validates stock change payload from Odoo."""
+    if not isinstance(payload, dict):
+        raise ValidationError(f"Stock payload must be a JSON object, got: {type(payload).__name__}")
+    if "pairs" in payload:
+        return payload
+    sku = payload.get("sku")
+    if not sku or not isinstance(sku, str) or not sku.strip():
+        raise ValidationError("Stock payload missing non-empty string 'sku'")
+    warehouse = payload.get("warehouse_code")
+    if not warehouse or not isinstance(warehouse, str) or not warehouse.strip():
+        raise ValidationError("Stock payload missing non-empty string 'warehouse_code'")
+    return payload
+
+
 def validate_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validates envelope and flow-specific payload.
@@ -178,6 +193,8 @@ def validate_message(msg: Dict[str, Any]) -> Dict[str, Any]:
 
     if flow == "product":
         envelope["payload"] = validate_product_payload(envelope["payload"])
+    elif flow == "stock":
+        envelope["payload"] = validate_stock_payload(envelope["payload"])
     
     return envelope
 
